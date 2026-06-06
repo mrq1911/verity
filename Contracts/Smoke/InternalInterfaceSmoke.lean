@@ -186,6 +186,25 @@ verity_contract VoidCallLetBindVoidRejected where
     let b ← pool.supply asset amount onBehalfOf 0
     pure ()
 
+-- A void interface method with a dynamic/composite param is rejected at the call site: the
+-- no-return ECM lays calldata out as `selector ++ numArgs*32` (one word per arg), so a `Bytes`
+-- (or `String`/`Array`/`Tuple`/struct) param would be silently mis-encoded. The guard turns that
+-- into an elaboration error instead. (lfglabs-dev/verity#1956)
+/--
+error: void interface call 'IBlob.push' has a Verity.Macro.ValueType.bytes parameter; the no-return call path only supports static single-word arguments (uint*/int256/address/bytes32/bool). Dynamic or composite parameters are not yet supported.
+-/
+#guard_msgs in
+verity_contract VoidCallDynamicParamRejected where
+  storage
+
+  interfaces
+    interface IBlob where
+      function push(Bytes)
+    end
+
+  function bad (blob : IBlob, payload : Bytes) : Unit := do
+    blob.push payload
+
 /--
 error: interface name 'Clash' conflicts with an existing type name
 -/

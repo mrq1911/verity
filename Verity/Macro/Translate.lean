@@ -763,6 +763,18 @@ private def interfaceFunctionSignature (methodName : String) (params : Array Val
     String.intercalate "," (params.toList.map valueTypeToSolidityString) ++
     ")"
 
+/-- A value type that ABI-encodes to exactly one 32-byte word. The no-return ECM
+    (`Compiler.Modules.Calls.noReturnModule`) lays calldata out as
+    `selector ++ numArgs*32`, one word per argument, so it is only sound for
+    arguments of these types. Dynamic (`bytes`/`string`/`array`) or composite
+    (`tuple`/`struct`/`fixedArray`/`adt`) params need head/tail ABI framing and
+    are rejected at the call site rather than silently mis-encoded.
+    `newtype` erases to its base, so it is single-word iff its base is. -/
+private def isStaticSingleWordValueType : ValueType → Bool
+  | .uint256 | .int256 | .uint8 | .uint16 | .address | .bytes32 | .bool => true
+  | .newtype _ baseType => isStaticSingleWordValueType baseType
+  | _ => false
+
 private def modelReturnTypeTerm (ty : ValueType) : CommandElabM Term :=
   match ty with
   | .unit => `(none)
@@ -6318,7 +6330,16 @@ private partial def resolveTypedInterfaceCall?
   let selector := Compiler.keccak256_first_4_bytes (interfaceFunctionSignature methodName ext.params)
   match ext.returnTys.toList with
   | [retTy] => pure (some (ext, target, argTerms, some retTy, selector))
-  | [] => pure (some (ext, target, argTerms, none, selector))  -- void interface method
+  | [] =>
+      -- void interface method lowers to the no-return ECM, whose calldata is
+      -- `selector ++ numArgs*32` (one word per arg). A dynamic/composite param
+      -- would need head/tail ABI framing and is rejected here rather than
+      -- silently mis-encoded. (lfglabs-dev/verity#1956)
+      for paramTy in ext.params do
+        unless isStaticSingleWordValueType paramTy do
+          throwErrorAt stx
+            s!"void interface call '{interfaceName}.{methodName}' has a {renderValueType paramTy} parameter; the no-return call path only supports static single-word arguments (uint*/int256/address/bytes32/bool). Dynamic or composite parameters are not yet supported."
+      pure (some (ext, target, argTerms, none, selector))
   | _ => throwErrorAt stx s!"interface call '{interfaceName}.{methodName}' returns multiple values; typed dot calls currently support one return value"
 
 mutual
